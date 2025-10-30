@@ -7,7 +7,8 @@ using namespace std;
 
 int main() {
     // Create simulation
-    FluidSimulation sim(150); // 500 particles for example
+    FluidSimulation sim(150); // 150 particles for example
+    //FluidSimulation sim(10,10,0.1,Vec2(0.0,0.0)); // grid particles for example
     cout << "Test log" << endl;
 
     // Initialize renderer
@@ -25,6 +26,7 @@ int main() {
         renderer.beginFrame();
         renderer.drawDensityMap(sim);
         renderer.drawParticles(sim.getPositions());
+        renderer.drawGui(sim);
         renderer.endFrame();
     }
 

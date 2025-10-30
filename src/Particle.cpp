@@ -2,12 +2,12 @@
 
 // Default constructor
 Particle::Particle() 
-    : x(0.0), y(0.0), vx(0.0), vy(0.0), mass(1.0), active(true) {
+    : x(0.0), y(0.0), vx(0.0), vy(0.0), mass(1.0), density(0.0), pressure(0.0), active(true) {
 }
 
 // Parameterized constructor
 Particle::Particle(double x, double y, double vx, double vy, double mass)
-    : x(x), y(y), vx(vx), vy(vy), mass(mass), active(true) {
+    : x(x), y(y), vx(vx), vy(vy), mass(mass), density(0.0), pressure(0.0), active(true) {
 }
 
 // Setters
@@ -55,4 +55,12 @@ double Particle::distanceTo(const Particle& other) const {
     double dx = x - other.x;
     double dy = y - other.y;
     return std::sqrt(dx * dx + dy * dy);
+}
+
+void Particle::setDensity(double density) {
+    this->density = density;
+}
+
+void Particle::setPressure(double pressure) {
+    this->pressure = pressure;
 }

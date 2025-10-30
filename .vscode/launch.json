@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Run FluidSim",
+            "name": "Run main.exe (Custom Build)",
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/main.exe",
@@ -10,20 +10,9 @@
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [],
-            "externalConsole": false,
+            "externalConsole": true,
             "MIMode": "gdb",
-            "miDebuggerPath": "gdb",
-            "setupCommands": [
-                {
-                    "description": "Enable pretty-printing for gdb",
-                    "text": "-enable-pretty-printing",
-                    "ignoreFailures": true
-                }
-            ],
-            "preLaunchTask": "Build and Run FluidSim",
-            "windows": {
-                "program": "${workspaceFolder}/main.exe"
-            }
+            "preLaunchTask": "build main.exe"
         }
     ]
 }

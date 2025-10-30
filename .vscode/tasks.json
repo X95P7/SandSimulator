@@ -1,40 +1,45 @@
 {
   "version": "2.0.0",
   "tasks": [
-    {
-      "label": "Build and Run FluidSim",
-      "type": "shell",
-      "command": "g++",
-      "args": [
-        "src/main.cpp",
-        "src/Renderer.cpp",
-        "src/FluidSimulation.cpp",
-        "src/Particle.cpp",
-        "src/glad.c",
-        "-I", "include",
-        "-L", "lib",
-        "-lglfw3dll",
-        "-lopengl32",
-        "-lgdi32",
-        "-o", "main"
-      ],
-      "group": {
-        "kind": "build",
-        "isDefault": true
-      },
-      "problemMatcher": [],
-      "detail": "Compile and run FluidSim project"
-    },
-    {
-      "label": "Run FluidSim",
-      "type": "shell",
-      "command": "g++ src/main.cpp src/Renderer.cpp src/FluidSimulation.cpp src/Particle.cpp src/glad.c -I include -L lib -lglfw3dll -lopengl32 -lgdi32 -o main",
-      "group": {
-        "kind": "test",
-        "isDefault": true
-      },
-      "problemMatcher": [],
-      "detail": "Compile and run FluidSim project"
-    }
+      {
+          "label": "build main.exe",
+          "type": "shell",
+          "command": "g++",
+          "args": [
+              "-std=c++17",
+              "src/main.cpp",
+              "src/Renderer.cpp",
+              "src/FluidSimulation.cpp",
+              "src/Particle.cpp",
+              "src/glad.c",
+              "external/imgui.cpp",
+              "external/imgui_draw.cpp",
+              "external/imgui_tables.cpp",
+              "external/imgui_widgets.cpp",
+              "external/imgui_demo.cpp",
+              "external/backends/imgui_impl_glfw.cpp",
+              "external/backends/imgui_impl_opengl3.cpp",
+              "-I", "src",
+              "-I", "include",
+              "-I", "external",
+              "-I", "external/backends",
+              "-DIMGUI_IMPL_OPENGL_LOADER_GLAD",
+              "-L", "lib",
+              "-lglfw3dll",
+              "-lopengl32",
+              "-lgdi32",
+              "-limm32",
+              "-lshell32",
+              "-lole32",
+              "-loleaut32",
+              "-luuid",
+              "-o", "main.exe"
+          ],
+          "group": {
+              "kind": "build",
+              "isDefault": true
+          },
+          "problemMatcher": ["$gcc"]
+      }
   ]
 }

@@ -5,6 +5,13 @@
 #include <vector>
 #include <cmath>
 #include <algorithm>
+// imgui
+#ifndef IMGUI_IMPL_OPENGL_LOADER_GLAD
+#define IMGUI_IMPL_OPENGL_LOADER_GLAD
+#endif
+#include "../external/imgui.h"
+#include "../external/backends/imgui_impl_glfw.h"
+#include "../external/backends/imgui_impl_opengl3.h"
 
 // Simple shader sources
 static const char* vertexShaderSrc = R"(
@@ -192,12 +199,24 @@ bool Renderer::init() {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, densityTexW, densityTexH, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
     glBindTexture(GL_TEXTURE_2D, 0);
 
+    // ImGui setup
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO(); (void)io;
+    ImGui::StyleColorsDark();
+    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplOpenGL3_Init("#version 330");
+
     return true;
 }
 
 void Renderer::beginFrame() {
     glClearColor(0.1f, 0.1f, 0.15f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
+    // start imgui frame
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
 }
 
 void Renderer::setShowDensityMap(bool enabled) {
@@ -244,6 +263,9 @@ void Renderer::drawParticles(const std::vector<Particle>& particles) {
 }
 
 void Renderer::endFrame() {
+    // render imgui
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     glfwSwapBuffers(window);
     glfwPollEvents();
 }
@@ -253,6 +275,10 @@ bool Renderer::shouldClose() {
 }
 
 void Renderer::cleanup() {
+    // shutdown imgui
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
     if (shaderProgram) {
         glDeleteProgram(shaderProgram);
         shaderProgram = 0;
@@ -302,7 +328,7 @@ void Renderer::drawDensityMap(const FluidSimulation& sim) {
         float y = -1.0f + (2.0f * (j + 0.5f) / static_cast<float>(densityTexH));
         for (int i = 0; i < densityTexW; ++i) {
             float x = -1.0f + (2.0f * (i + 0.5f) / static_cast<float>(densityTexW));
-            double d = sim.densityAt(x, y);
+            double d = sim.densityAtFast(x, y);
             size_t idx = static_cast<size_t>(j) * densityTexW + static_cast<size_t>(i);
             rho[idx] = d;
             if (d < rhoMin) rhoMin = d;
@@ -363,4 +389,48 @@ void Renderer::drawDensityMap(const FluidSimulation& sim) {
     glBindVertexArray(0);
     glBindTexture(GL_TEXTURE_2D, 0);
     glUseProgram(0);
+}
+
+void Renderer::drawGui(FluidSimulation& sim) {
+    ImGui::Begin("Simulation Controls");
+    ImGui::Text("Gravity");
+    // sync initial value if needed
+    const Vec2& g = sim.getGravity();
+    if (std::abs(uiGravityY - static_cast<float>(g.y)) > 1e-6f) {
+        uiGravityY = static_cast<float>(g.y);
+    }
+    if (ImGui::SliderFloat("Gravity Y", &uiGravityY, -2.0f, 0.0f, "%.6f")) {
+        sim.setGravity(Vec2(0.0, static_cast<double>(uiGravityY)));
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Smoothing Radius (h)");
+    // sync UI value with simulation
+    float simH = static_cast<float>(sim.getSmoothingRadius());
+    if (std::abs(uiSmoothingRadius - simH) > 1e-6f) {
+        uiSmoothingRadius = simH;
+    }
+    if (ImGui::SliderFloat("h", &uiSmoothingRadius, 0.005f, 0.5f, "%.5f")) {
+        sim.setSmoothingRadius(static_cast<double>(uiSmoothingRadius));
+    }
+
+    ImGui::Separator();
+    ImGui::Checkbox("Show Density Map", &showDensityMap);
+    if (showDensityMap) {
+        static const char* resItems[] = { "64", "128", "256" };
+        if (ImGui::Combo("Density Res", &uiDensityResIndex, resItems, IM_ARRAYSIZE(resItems))) {
+            int newW = densityTexW, newH = densityTexH;
+            if (uiDensityResIndex == 0) { newW = 64; newH = 64; }
+            else if (uiDensityResIndex == 1) { newW = 128; newH = 128; }
+            else { newW = 256; newH = 256; }
+            if (newW != densityTexW || newH != densityTexH) {
+                densityTexW = newW;
+                densityTexH = newH;
+                glBindTexture(GL_TEXTURE_2D, bgTexture);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, densityTexW, densityTexH, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+                glBindTexture(GL_TEXTURE_2D, 0);
+            }
+        }
+    }
+    ImGui::End();
 }
