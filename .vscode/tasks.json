@@ -1,33 +1,40 @@
 {
-    "version": "2.0.0",
-    "tasks": [
-        {
-            "type": "shell",
-            "label": "C/C++: g++.exe build active file",
-            "command": "C:\\Program Files (x86)\\mingw-w64\\i686-8.1.0-posix-dwarf-rt_v6-rev0\\mingw32\\bin\\g++.exe",
-            "args": [
-                "-g",
-                "-std=c++17",
-                // ISSUE: problem in some OS regarding "fatal error: glad/glad.h not found."
-		// SOL.: use the workspace directory path variable here:
-    		"-I${workspaceFolder}/include",
-		"-L${workspaceFolder}/lib",				
-		"${workspaceFolder}/src/\\*.cpp",				
-		"${workspaceFolder}/src/glad.c",
-                "-lglfw3dll",
-                "-o",
-                "${workspaceFolder}/myprogram.exe"
-            ],
-            "options": {
-                "cwd": "${workspaceFolder}"
-            },
-            "problemMatcher": [
-                "$gcc"
-            ],
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            }
-        }
-    ]
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build and Run FluidSim",
+      "type": "shell",
+      "command": "g++",
+      "args": [
+        "src/main.cpp",
+        "src/Renderer.cpp",
+        "src/FluidSimulation.cpp",
+        "src/Particle.cpp",
+        "src/glad.c",
+        "-I", "include",
+        "-L", "lib",
+        "-lglfw3dll",
+        "-lopengl32",
+        "-lgdi32",
+        "-o", "main"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [],
+      "detail": "Compile and run FluidSim project"
+    },
+    {
+      "label": "Run FluidSim",
+      "type": "shell",
+      "command": "g++ src/main.cpp src/Renderer.cpp src/FluidSimulation.cpp src/Particle.cpp src/glad.c -I include -L lib -lglfw3dll -lopengl32 -lgdi32 -o main",
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "problemMatcher": [],
+      "detail": "Compile and run FluidSim project"
+    }
+  ]
 }
