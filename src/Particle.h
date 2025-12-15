@@ -9,8 +9,10 @@ private:
     double vx, vy;         // Velocity
     double mass;           // Mass
     double density;        // Density
+    double nearDensity;    // Near density (for dual density SPH)
     double pressure;       // Pressure
     bool active;           // Whether particle is active/alive
+    double nx, ny;
 
 public:
     // Constructors
@@ -23,6 +25,7 @@ public:
     double getVx() const { return vx; }
     double getVy() const { return vy; }
     double getDensity() const { return density; }
+    double getNearDensity() const { return nearDensity; }
     double getPressure() const { return pressure; }
     double getMass() const { return mass; }
     bool isActive() const { return active; }
@@ -31,6 +34,7 @@ public:
     void setPosition(double x, double y);
     void setVelocity(double vx, double vy);
     void setDensity(double density);
+    void setNearDensity(double nearDensity);
     void setPressure(double pressure);
     void setMass(double mass);
     void setActive(bool active);

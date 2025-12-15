@@ -1,0 +1,57 @@
+# Build artifacts
+/build/
+/cmake-build-*/
+*.o
+*.obj
+*.pch
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.lib
+*.a
+*.so
+*.dylib
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+install_manifest.txt
+
+# Visual Studio / MSVC
+*.vcxproj*
+*.sln
+*.user
+*.opensdf
+*.sdf
+*.vc.db
+*.VC.db
+
+# CLion / IntelliJ
+.idea/
+cmake-build-debug*/
+cmake-build-release*/
+
+# VS Code
+.vscode/
+
+# ImGui / external build caches
+external/**/Debug/
+external/**/Release/
+external/**/x64/
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Temporary
+*.log
+*.tmp
+*.cache
+*.docx
+*.pdf
+
+# Cursor / editor state
+.cursor/

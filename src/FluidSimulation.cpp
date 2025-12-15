@@ -6,8 +6,8 @@
 
 // -------------------- SPH Constants (tweak these) --------------------
 const double PARTICLE_RADIUS       = 0.02;
-const double SMOOTHING_RADIUS      = 0.05;        // h (default)
-const double TARGET_DENSITY          = 1.0;     // rho0
+const double SMOOTHING_RADIUS      = 0.11;        // h (default)
+const double TARGET_DENSITY          = 1.5;     // rho0
 const double PRESSURE_MULTIPLIER    = 1.0;  
 const double VISCOSITY_CONSTANT   = 0.01;         // mu (typical SPH friendly value)
 const double SURFACE_TENSION_CONSTANT = 0.0000001;  // optional
@@ -20,12 +20,19 @@ const double M_PI = 3.14159265358979323846;
 // --------------------------------------------------------------------
 
 FluidSimulation::FluidSimulation(int count)
-    : gravity(0.0, -0.005), // standard gravity direction (y)
-      timeStep(0.005),    // smaller time step -> more stable (tweak: 0.003-0.01)
+    : gravity(0.0, -4.0),    // gravity Y approx -4 (from provided settings)
+      timeStep(0.005f),
       top_border(1.0), bottom_border(-1.0),
       left_border(-1.0), right_border(1.0),
-      damping(0.9),
-      smoothingRadius(SMOOTHING_RADIUS)
+      damping(0.5f),
+      velocityDrag(0.99f),   // per-step velocity drag
+      collisionDamping(0.0f),
+      smoothingRadius(0.16433),
+      pressureMultiplier(4.12456),
+      nearPressureMultiplier(0.93206),
+      viscosityStrength(0.0),
+      restDensity(5.0),
+      maxVelocity(2.01)
 {
     particles.reserve(count);
     for (int i = 0; i < count; ++i) {
@@ -41,12 +48,19 @@ FluidSimulation::FluidSimulation(int count)
 }
 
 FluidSimulation::FluidSimulation(int rows, int cols, float spacing, const Vec2& origin)
-    : gravity(0.0, -0.005),
-      timeStep(0.005),
+    : gravity(0.0, -4.0),
+      timeStep(0.005f),
       top_border(1.0), bottom_border(-1.0),
       left_border(-1.0), right_border(1.0),
-      damping(0.9),
-      smoothingRadius(SMOOTHING_RADIUS)
+      damping(0.5f),
+      velocityDrag(0.99f),
+      collisionDamping(0.0f),
+      smoothingRadius(0.16433),
+      pressureMultiplier(4.12456),
+      nearPressureMultiplier(0.93206),
+      viscosityStrength(0.0),
+      restDensity(5.0),
+      maxVelocity(2.01)
 {
     int total = rows * cols;
     particles.reserve(total);
@@ -70,23 +84,32 @@ FluidSimulation::FluidSimulation(int rows, int cols, float spacing, const Vec2& 
 // -------------------- Kernels --------------------
 
 double FluidSimulation::smoothingKernel(double r, double distance) const {
-    float volume = M_PI * pow(r ,8) / 4;
-    float value = std::max(0.0f, static_cast<float>(r * r - distance * distance));
-    return value * value * value / volume;
+    if (distance > r) {
+        return 0.0;
+    }
+
+    float volume = M_PI * pow(r ,4) / 6;
+    return (r - distance) * (r - distance) / volume;
 }
 
 double FluidSimulation::smoothingKernalDerivative(float r, float dst) const {
     if(dst > r){
         return 0.0;
     }
-    float f = r * r - dst * dst;
-    float scale = -24 / (M_PI * pow(r, 8));
-    return scale * dst * f * f;
+    float scale = 12 / (M_PI * pow(r, 4));
+    return (dst - r) * scale;
+}
+
+float FluidSimulation::calculateSharedPressure(float densityA, float densityB) {
+    float pressureA = pressureOf(densityA);
+    float pressureB = pressureOf(densityB);
+    return (pressureA + pressureB) / 2;
 }
 
 Vec2 FluidSimulation::calculateGradient(const Particle& particle) {
     Vec2 point = Vec2(particle.getX(), particle.getY());
     Vec2 gradient(0.0, 0.0);
+    double thisDensity = particle.getDensity();
 
     for (int i = 0; i < particles.size(); i++) {
         const Particle& otherParticle = particles[i];
@@ -101,33 +124,15 @@ Vec2 FluidSimulation::calculateGradient(const Particle& particle) {
             double slope = smoothingKernalDerivative((float)smoothingRadius, (float)dst); // dW/dr
             double mass = otherParticle.getMass();
             double density = otherParticle.getDensity();
-            double pressure = otherParticle.getPressure(); // e.g. pressure or temperature
+            double sharedPressure = calculateSharedPressure(thisDensity, density); // e.g. pressure or temperature
 
             // ∇A_i += m_j * (A_j / ρ_j) * ∇W(r_ij, h)
-            float scale = (float)(-slope * mass * pressure / density);
+            float scale = (float)(-slope * mass * sharedPressure / density);
             gradient += direction * scale;
         }
     }
 
     return gradient;
-}
-
-// Spiky kernel derivative magnitude (dW/dr) for pressure gradient
-double FluidSimulation::spikyKernelDerivative(double r) {
-    if (r <= 0.0 || r >= smoothingRadius) return 0.0;
-    double hr = (smoothingRadius - r);
-    // dW/dr for spiky: -45/(pi h^6) * (h - r)^2
-    // Here we return the scalar dW/dr (note: negative already included)
-    return -45.0 / (M_PI * pow(smoothingRadius, 6)) * hr * hr;
-    // Alternatively: return -SPIKY_FACTOR * 3 * pow((SMOOTHING_RADIUS - r), 2);
-}
-
-// Viscosity kernel laplacian (scalar)
-double FluidSimulation::viscosityLaplacian(double r) {
-    if (r >= smoothingRadius) return 0.0;
-    double hr = (smoothingRadius - r);
-    // Laplacian of viscosity kernel: 45/(pi h^6) * (h - r)
-    return (45.0 / (M_PI * pow(smoothingRadius, 6))) * hr;
 }
 
 // -------------------- Density & Pressure --------------------
@@ -147,7 +152,7 @@ double FluidSimulation::densityOf(const Particle& particle) {
 
 // Pressure 
 double FluidSimulation::pressureOf(double density) {
-    double p = PRESSURE_MULTIPLIER * (density - TARGET_DENSITY);
+    double p = pressureMultiplier * (density - restDensity);
     return std::max(p, 0.0);
 }
 
@@ -156,28 +161,33 @@ double FluidSimulation::pressureOf(double density) {
 
 void FluidSimulation::update() {
     size_t N = particles.size();
+    Vec2 graivityForce = (gravity);
     if (N == 0) return;
 
     // 1) Compute densities and pressures for all particles (stored in objects)
     for (size_t i = 0; i < N; ++i) {
         double density = densityOf(particles[i]);
         particles[i].setDensity(density);
-        particles[i].setPressure(pressureOf(density));
-
-        Vec2 totalForce = (gravity);
-        particles[i].applyForce(totalForce.x, totalForce.y, timeStep);
+        //particles[i].setPressure(pressureOf(density));
     } 
 
     for (size_t i = 0; i < N; ++i) {
         Particle& pi = particles[i];
         Vec2 pressureForce = calculateGradient(pi);
         Vec2 pressureAcceleration = pressureForce / pi.getDensity();
-        pi.applyForce(pressureAcceleration.x, pressureAcceleration.y, timeStep);
+        pi.applyForce(pressureAcceleration.x + graivityForce.x, pressureAcceleration.y + graivityForce.y, timeStep);
     }
 
     // 2) Move paricles
     for (size_t i = 0; i < N; ++i) {
         Particle& pi = particles[i];
+
+        // Apply per-step velocity drag to help particles settle
+        double vx = pi.getVx();
+        double vy = pi.getVy();
+        vx *= velocityDrag;
+        vy *= velocityDrag;
+        pi.setVelocity(vx, vy);
 
         // Integrate position
         pi.update(timeStep);
@@ -220,7 +230,7 @@ double FluidSimulation::densityAt(float x, float y) const {
     return std::max(density, EPSILON);
 }
 
-double FluidSimulation::densityAtFast(float x, float y) const {
+double FluidSimulation::densityAtFast(float x, float y, double smoothingRadius) const {
     // Compute using squared distance to avoid sqrt and inline Poly6
     const double h = smoothingRadius;
     const double h2 = h * h;
@@ -239,6 +249,50 @@ double FluidSimulation::densityAtFast(float x, float y) const {
     return std::max(density, EPSILON);
 }
 
-double FluidSimulation::getRestDensity() const {
-    return TARGET_DENSITY;
+// getRestDensity() is now inline in the header
+
+// Apply mouse interaction force (positive strength = attract, negative = repel)
+void FluidSimulation::applyInteraction(const Vec2& point, double strength, double radius) {
+    if (strength == 0.0 || radius <= 0.0) return;
+    const double r2 = radius * radius;
+    for (auto& p : particles) {
+        double dx = p.getX() - point.x;
+        double dy = p.getY() - point.y;
+        double dist2 = dx * dx + dy * dy;
+        if (dist2 > r2 || dist2 < EPSILON) continue;
+        double dist = std::sqrt(dist2);
+        double falloff = 1.0 - (dist / radius); // linear falloff
+        Vec2 dir(dx / dist, dy / dist);
+        // Attract (strength > 0) toward point, repel (strength < 0) away from point
+        // Boost interaction strength to ensure noticeable motion
+        const double boost = 5.0;
+        double fx = -strength * falloff * dir.x * boost;
+        double fy = -strength * falloff * dir.y * boost;
+        p.applyForce(fx, fy, timeStep);
+    }
+}
+
+// Reset particles with custom spawn settings
+void FluidSimulation::resetParticles(int count, float spreadX, float spreadY, float originX, float originY) {
+    particles.clear();
+    particles.reserve(count);
+
+    const double mass = 1.0;
+    for (int i = 0; i < count; ++i) {
+        // Position within the spread area centered at origin
+        float x = originX + (float(rand()) / RAND_MAX - 0.5f) * spreadX;
+        float y = originY + (float(rand()) / RAND_MAX - 0.5f) * spreadY;
+
+        // Clamp to borders
+        if (x < left_border) x = (float)left_border;
+        if (x > right_border) x = (float)right_border;
+        if (y < bottom_border) y = (float)bottom_border;
+        if (y > top_border) y = (float)top_border;
+
+        // Small random initial velocity
+        float vx = ((float(rand()) / RAND_MAX) * 2 - 1) * 0.01f;
+        float vy = 0.0f;
+
+        particles.emplace_back(x, y, vx, vy, mass);
+    }
 }

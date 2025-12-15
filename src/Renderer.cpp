@@ -17,19 +17,24 @@
 static const char* vertexShaderSrc = R"(
 #version 330 core
 layout(location = 0) in vec2 aPos;
+layout(location = 1) in vec3 aColor;
 uniform float uPointSize;
+uniform bool uUseVelocityColor;
+uniform vec3 uDefaultColor;
+out vec3 vColor;
 void main() {
     gl_Position = vec4(aPos, 0.0, 1.0);
     gl_PointSize = uPointSize;
+    vColor = uUseVelocityColor ? aColor : uDefaultColor;
 }
 )";
 
 static const char* fragmentShaderSrc = R"(
 #version 330 core
+in vec3 vColor;
 out vec4 FragColor;
-uniform vec3 uColor;
 void main() {
-    FragColor = vec4(uColor, 1.0);
+    FragColor = vec4(vColor, 1.0);
 }
 )";
 
@@ -92,9 +97,11 @@ static GLuint linkProgram(GLuint vs, GLuint fs) {
 // keep shader program and uniform locations in cpp file scope
 static GLuint shaderProgram = 0;
 static GLint loc_uPointSize = -1;
-static GLint loc_uColor = -1;
+static GLint loc_uDefaultColor = -1;
+static GLint loc_uUseVelocityColor = -1;
 static GLuint quadProgram = 0;
 static GLint loc_uTex = -1;
+static GLuint colorVBO = 0;
 
 Renderer::Renderer(int w, int h, const char* title)
     : width(w), height(h), window(nullptr), VAO(0), VBO(0) {}
@@ -135,7 +142,8 @@ bool Renderer::init() {
 
     // get uniform locations
     loc_uPointSize = glGetUniformLocation(shaderProgram, "uPointSize");
-    loc_uColor = glGetUniformLocation(shaderProgram, "uColor");
+    loc_uDefaultColor = glGetUniformLocation(shaderProgram, "uDefaultColor");
+    loc_uUseVelocityColor = glGetUniformLocation(shaderProgram, "uUseVelocityColor");
 
     // compile quad shaders
     GLuint qvs = compileShader(GL_VERTEX_SHADER, quadVertexSrc);
@@ -145,19 +153,24 @@ bool Renderer::init() {
     glDeleteShader(qfs);
     loc_uTex = glGetUniformLocation(quadProgram, "uTex");
 
-    // create VAO + VBO
+    // create VAO + VBOs
     glGenVertexArrays(1, &VAO);
     glGenBuffers(1, &VBO);
+    glGenBuffers(1, &colorVBO);
 
     glBindVertexArray(VAO);
+    
+    // Position buffer
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
-
-    // initially allocate zero bytes; we'll fill each frame with glBufferData
     glBufferData(GL_ARRAY_BUFFER, 0, nullptr, GL_DYNAMIC_DRAW);
-
-    // layout: location 0 -> vec2 (two floats)
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+
+    // Color buffer
+    glBindBuffer(GL_ARRAY_BUFFER, colorVBO);
+    glBufferData(GL_ARRAY_BUFFER, 0, nullptr, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
 
     // unbind to be safe
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -219,41 +232,139 @@ void Renderer::beginFrame() {
     ImGui::NewFrame();
 }
 
+void Renderer::drawInteractionOverlay() {
+    if (!lastInteractActive) return;
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    float sx = (lastInteractNdcX * 0.5f + 0.5f) * static_cast<float>(width);
+    float sy = (1.0f - (lastInteractNdcY * 0.5f + 0.5f)) * static_cast<float>(height);
+    float sMin = static_cast<float>(std::min(width, height));
+    float sr = lastInteractRadius * 0.5f * sMin;
+    ImU32 col = ImColor(lastInteractRepel ? ImVec4(0.9f, 0.2f, 0.2f, 0.9f)
+                                          : ImVec4(0.2f, 0.9f, 0.2f, 0.9f));
+    dl->AddCircle(ImVec2(sx, sy), sr, col, 64, 2.0f);
+    dl->AddCircleFilled(ImVec2(sx, sy), 4.0f, col);
+}
+
+bool Renderer::getInteraction(Vec2& point, float& strength, float& radius) {
+    // Check mouse buttons
+    bool left = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+    bool right = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    if (!left && !right) {
+        lastInteractActive = false;
+        return false;
+    }
+
+    // Get cursor position in window coordinates
+    double cx, cy;
+    glfwGetCursorPos(window, &cx, &cy);
+    // Convert to simulation coords (-1..1)
+    float ndcX = static_cast<float>((cx / width) * 2.0 - 1.0);
+    float ndcY = static_cast<float>(1.0 - (cy / height) * 2.0); // invert Y
+
+    point = Vec2(ndcX, ndcY);
+    radius = uiInteractRadius;
+    strength = left ? uiInteractStrength : -uiInteractStrength; // left attracts, right repels
+
+    // store for overlay
+    lastInteractActive = true;
+    lastInteractRepel = right;
+    lastInteractNdcX = ndcX;
+    lastInteractNdcY = ndcY;
+    lastInteractRadius = uiInteractRadius;
+    return true;
+}
+
 void Renderer::setShowDensityMap(bool enabled) {
     showDensityMap = enabled;
 }
 
-void Renderer::drawParticles(const std::vector<Particle>& particles) {
+void Renderer::drawParticles(const std::vector<Particle>& particles, double maxVelocity) {
     if (particles.empty()) return;
 
-    // Extract positions from particles and convert to OpenGL coordinates
+    // Extract positions and colors from particles
     std::vector<float> positions;
+    std::vector<float> colors;
     positions.reserve(particles.size() * 2);
+    colors.reserve(particles.size() * 3);
+    
+    // Use maxVelocity from simulation for normalization (or calculate if not provided)
+    float maxVel = static_cast<float>(maxVelocity);
+    if (useVelocityColor && maxVel <= 0.0f) {
+        // Fallback: calculate max velocity if not provided
+        maxVel = 0.01f; // minimum threshold
+        for (const auto& particle : particles) {
+            float vx = static_cast<float>(particle.getVx());
+            float vy = static_cast<float>(particle.getVy());
+            float vel = std::sqrt(vx * vx + vy * vy);
+            if (vel > maxVel) maxVel = vel;
+        }
+        if (maxVel < 0.01f) maxVel = 0.01f; // prevent division by zero
+    }
     
     for (const auto& particle : particles) {
-        // Convert from simulation coordinates (-1 to 1) to OpenGL coordinates
+        // Position
         float x = particle.getX();
         float y = particle.getY();
-        
-        // Normalize to OpenGL coordinate system (-1 to 1)
         positions.push_back(x);
         positions.push_back(y);
+        
+        // Color based on velocity if enabled
+        if (useVelocityColor && maxVel > 0.0f) {
+            float vx = static_cast<float>(particle.getVx());
+            float vy = static_cast<float>(particle.getVy());
+            float vel = std::sqrt(vx * vx + vy * vy);
+            float normalizedVel = std::min(1.0f, vel / maxVel);
+            
+            // Color gradient: blue (0 velocity) -> green -> yellow -> red (max velocity)
+            float r, g, b;
+            if (normalizedVel < 0.33f) {
+                // Blue to green
+                float t = normalizedVel / 0.33f;
+                r = 0.0f;
+                g = t;
+                b = 1.0f - t;
+            } else if (normalizedVel < 0.67f) {
+                // Green to yellow
+                float t = (normalizedVel - 0.33f) / 0.34f;
+                r = t;
+                g = 1.0f;
+                b = 0.0f;
+            } else {
+                // Yellow to red
+                float t = (normalizedVel - 0.67f) / 0.33f;
+                r = 1.0f;
+                g = 1.0f - t;
+                b = 0.0f;
+            }
+            colors.push_back(r);
+            colors.push_back(g);
+            colors.push_back(b);
+        } else {
+            // Default light-blue color
+            colors.push_back(0.2f);
+            colors.push_back(0.6f);
+            colors.push_back(1.0f);
+        }
     }
 
     // Upload particle positions to GPU
+    glBindVertexArray(VAO);
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
     glBufferData(GL_ARRAY_BUFFER, positions.size() * sizeof(float), positions.data(), GL_DYNAMIC_DRAW);
+    
+    // Upload particle colors to GPU
+    glBindBuffer(GL_ARRAY_BUFFER, colorVBO);
+    glBufferData(GL_ARRAY_BUFFER, colors.size() * sizeof(float), colors.data(), GL_DYNAMIC_DRAW);
 
     // draw
     glUseProgram(shaderProgram);
 
-    // set uniforms (point size in pixels, color)
-    float pointSize = 6.0f; // adjust as needed
+    // set uniforms
+    float pointSize = 6.0f;
     glUniform1f(loc_uPointSize, pointSize);
-    // light-blue color
-    glUniform3f(loc_uColor, 0.2f, 0.6f, 1.0f);
+    glUniform3f(loc_uDefaultColor, 0.2f, 0.6f, 1.0f);
+    glUniform1i(loc_uUseVelocityColor, useVelocityColor ? 1 : 0);
 
-    glBindVertexArray(VAO);
     glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(particles.size()));
 
     // cleanup bindings
@@ -263,6 +374,8 @@ void Renderer::drawParticles(const std::vector<Particle>& particles) {
 }
 
 void Renderer::endFrame() {
+    // overlay for interaction (mouse) before rendering ImGui
+    drawInteractionOverlay();
     // render imgui
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -290,6 +403,10 @@ void Renderer::cleanup() {
     if (VBO) {
         glDeleteBuffers(1, &VBO);
         VBO = 0;
+    }
+    if (colorVBO) {
+        glDeleteBuffers(1, &colorVBO);
+        colorVBO = 0;
     }
     if (VAO) {
         glDeleteVertexArrays(1, &VAO);
@@ -328,7 +445,7 @@ void Renderer::drawDensityMap(const FluidSimulation& sim) {
         float y = -1.0f + (2.0f * (j + 0.5f) / static_cast<float>(densityTexH));
         for (int i = 0; i < densityTexW; ++i) {
             float x = -1.0f + (2.0f * (i + 0.5f) / static_cast<float>(densityTexW));
-            double d = sim.densityAtFast(x, y);
+            double d = sim.densityAtFast(x, y, sim.getSmoothingRadius());
             size_t idx = static_cast<size_t>(j) * densityTexW + static_cast<size_t>(i);
             rho[idx] = d;
             if (d < rhoMin) rhoMin = d;
@@ -396,11 +513,23 @@ void Renderer::drawGui(FluidSimulation& sim) {
     ImGui::Text("Gravity");
     // sync initial value if needed
     const Vec2& g = sim.getGravity();
+    if (std::abs(uiGravityX - static_cast<float>(g.x)) > 1e-6f) {
+        uiGravityX = static_cast<float>(g.x);
+    }
     if (std::abs(uiGravityY - static_cast<float>(g.y)) > 1e-6f) {
         uiGravityY = static_cast<float>(g.y);
     }
-    if (ImGui::SliderFloat("Gravity Y", &uiGravityY, -2.0f, 0.0f, "%.6f")) {
-        sim.setGravity(Vec2(0.0, static_cast<double>(uiGravityY)));
+    if (ImGui::SliderFloat("Gravity X", &uiGravityX, -2.0f, 2.0f, "%.6f")) {
+        sim.setGravity(Vec2(static_cast<double>(uiGravityX), static_cast<double>(uiGravityY)));
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Horizontal gravity component");
+    }
+    if (ImGui::SliderFloat("Gravity Y", &uiGravityY, -10.0f, 2.0f, "%.6f")) {
+        sim.setGravity(Vec2(static_cast<double>(uiGravityX), static_cast<double>(uiGravityY)));
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Vertical gravity component (negative = downward)");
     }
 
     ImGui::Separator();
@@ -413,7 +542,135 @@ void Renderer::drawGui(FluidSimulation& sim) {
     if (ImGui::SliderFloat("h", &uiSmoothingRadius, 0.005f, 0.5f, "%.5f")) {
         sim.setSmoothingRadius(static_cast<double>(uiSmoothingRadius));
     }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Smoothing radius for SPH kernels (affects interaction range)");
+    }
 
+    ImGui::Separator();
+    ImGui::Text("Pressure Multiplier");
+    // sync UI value with simulation
+    float simPM = static_cast<float>(sim.getPressureMultiplier());
+    if (std::abs(uiPressureMultiplier - simPM) > 1e-6f) {
+        uiPressureMultiplier = simPM;
+    }
+    if (ImGui::SliderFloat("Pressure Multiplier", &uiPressureMultiplier, 0.5f, 10.0f, "%.5f")) {
+        sim.setPressureMultiplier(static_cast<double>(uiPressureMultiplier));
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Multiplier for regular pressure force");
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Near Pressure Multiplier");
+    // sync UI value with simulation
+    float simNPM = static_cast<float>(sim.getNearPressureMultiplier());
+    if (std::abs(uiNearPressureMultiplier - simNPM) > 1e-6f) {
+        uiNearPressureMultiplier = simNPM;
+    }
+    if (ImGui::SliderFloat("Near Pressure Multiplier", &uiNearPressureMultiplier, 0.1f, 20.0f, "%.5f")) {
+        sim.setNearPressureMultiplier(static_cast<double>(uiNearPressureMultiplier));
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Multiplier for near pressure force (prevents particle clustering)");
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Viscosity Strength");
+    // sync UI value with simulation
+    float simVisc = static_cast<float>(sim.getViscosityStrength());
+    if (std::abs(uiViscosityStrength - simVisc) > 1e-6f) {
+        uiViscosityStrength = simVisc;
+    }
+    if (ImGui::SliderFloat("Viscosity Strength", &uiViscosityStrength, 0.0f, 1.0f, "%.5f")) {
+        sim.setViscosityStrength(static_cast<double>(uiViscosityStrength));
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Strength of viscosity force (smooths velocity differences between particles)");
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Max Velocity");
+    float simMaxVel = static_cast<float>(sim.getMaxVelocity());
+    if (std::abs(uiMaxVelocity - simMaxVel) > 1e-6f) {
+        uiMaxVelocity = simMaxVel;
+    }
+    if (ImGui::SliderFloat("Max Velocity", &uiMaxVelocity, 0.1f, 50.0f, "%.2f")) {
+        sim.setMaxVelocity(static_cast<double>(uiMaxVelocity));
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Maximum velocity clamp (0 = no limit)");
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Time Step");
+    // sync UI value with simulation
+    float simTimeStep = sim.getTimeStep();
+    if (std::abs(uiTimeStep - simTimeStep) > 1e-6f) {
+        uiTimeStep = simTimeStep;
+    }
+    if (ImGui::SliderFloat("Time Step", &uiTimeStep, 0.001f, 0.02f, "%.6f")) {
+        sim.setTimeStep(uiTimeStep);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Simulation time step (smaller = more stable but slower)");
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Damping");
+    // sync UI value with simulation
+    float simDamping = sim.getDamping();
+    if (std::abs(uiDamping - simDamping) > 1e-6f) {
+        uiDamping = simDamping;
+    }
+    if (ImGui::SliderFloat("Damping", &uiDamping, 0.0f, 1.0f, "%.3f")) {
+        sim.setDamping(uiDamping);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("General velocity damping");
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Collision Damping");
+    // sync UI value with simulation
+    float simCollisionDamping = sim.getCollisionDamping();
+    if (std::abs(uiCollisionDamping - simCollisionDamping) > 1e-6f) {
+        uiCollisionDamping = simCollisionDamping;
+    }
+    if (ImGui::SliderFloat("Collision Damping", &uiCollisionDamping, 0.0f, 1.0f, "%.3f")) {
+        sim.setCollisionDamping(uiCollisionDamping);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Velocity damping specifically for boundary collisions (1.0 = no damping, 0.0 = full damping)");
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Interaction");
+    ImGui::SliderFloat("Interact Radius", &uiInteractRadius, 0.01f, 0.5f, "%.3f");
+    ImGui::SliderFloat("Interact Strength", &uiInteractStrength, 0.0f, 20.0f, "%.2f");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Left click attracts, right click repels; higher = stronger force");
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Rest Density");
+    // sync UI value with simulation
+    float simRestDensity = static_cast<float>(sim.getRestDensity());
+    if (std::abs(uiRestDensity - simRestDensity) > 1e-6f) {
+        uiRestDensity = simRestDensity;
+    }
+    if (ImGui::SliderFloat("Rest Density", &uiRestDensity, 0.1f, 5.0f, "%.3f")) {
+        sim.setRestDensity(static_cast<double>(uiRestDensity));
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Target density for pressure calculation");
+    }
+
+    ImGui::Separator();
+    ImGui::Checkbox("Color by Velocity", &useVelocityColor);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Color particles based on their velocity magnitude (blue=slow, red=fast)");
+    }
+    
     ImGui::Separator();
     ImGui::Checkbox("Show Density Map", &showDensityMap);
     if (showDensityMap) {
@@ -431,6 +688,41 @@ void Renderer::drawGui(FluidSimulation& sim) {
                 glBindTexture(GL_TEXTURE_2D, 0);
             }
         }
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Particle Spawn Settings");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Configure how particles are spawned when resetting");
+    }
+    ImGui::SliderInt("Particle Count", &uiParticleCount, 10, 2000, "%d");
+    ImGui::SliderFloat("Spread X", &uiSpreadX, 0.1f, 4.0f, "%.2f");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Horizontal spread of particles from origin");
+    }
+    ImGui::SliderFloat("Spread Y", &uiSpreadY, 0.1f, 4.0f, "%.2f");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Vertical spread of particles from origin");
+    }
+    ImGui::SliderFloat("Origin X", &uiOriginX, -1.0f, 1.0f, "%.2f");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("X coordinate of spawn center");
+    }
+    ImGui::SliderFloat("Origin Y", &uiOriginY, -1.0f, 1.0f, "%.2f");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Y coordinate of spawn center");
+    }
+
+    ImGui::Separator();
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.9f, 0.3f, 0.3f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.7f, 0.1f, 0.1f, 1.0f));
+    if (ImGui::Button("Reset Simulation", ImVec2(-1, 0))) {
+        resetRequested = true;
+    }
+    ImGui::PopStyleColor(3);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Reset the simulation with new spawn settings");
     }
     ImGui::End();
 }
