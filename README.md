@@ -47,8 +47,10 @@ Requirements:
 - OpenGL-capable GPU and drivers
 - GLFW 3 DLL (`glfw3.dll`) and import libraries in `lib/`
 
-With VS Code:
+From File:
+- Navigate to the project directory and run main.exe
 
+With VS Code:
 - Press **Ctrl+Shift+B** and run the **`build main.exe`** task.  
   This executes (simplified):
 
