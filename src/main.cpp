@@ -12,12 +12,11 @@ int main() {
     cout << "Test log" << endl;
 
     // Initialize renderer
-    Renderer renderer(800, 600, "Fluid Simulation");
+    Renderer renderer(1600, 800, "Fluid Simulation");
     if (!renderer.init()) {
         std::cerr << "Failed to initialize renderer\n";
         return -1;
     }
-    renderer.setShowDensityMap(true);
 
     // Main loop
     while (!renderer.shouldClose()) {

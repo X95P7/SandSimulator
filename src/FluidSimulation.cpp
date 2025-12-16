@@ -3,6 +3,7 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include "SPHKernels.h"
 
 // -------------------- SPH Constants (tweak these) --------------------
 const double PARTICLE_RADIUS       = 0.02;
@@ -21,17 +22,17 @@ const double M_PI = 3.14159265358979323846;
 
 FluidSimulation::FluidSimulation(int count)
     : gravity(0.0, -4.0),    // gravity Y approx -4 (from provided settings)
-      timeStep(0.005f),
+      timeStep(0.002f),
       top_border(1.0), bottom_border(-1.0),
       left_border(-1.0), right_border(1.0),
       damping(0.5f),
       velocityDrag(0.99f),   // per-step velocity drag
       collisionDamping(0.0f),
-      smoothingRadius(0.16433),
-      pressureMultiplier(4.12456),
-      nearPressureMultiplier(0.93206),
+      smoothingRadius(0.05),
+      pressureMultiplier(8.6),
+      nearPressureMultiplier(5.3),
       viscosityStrength(0.0),
-      restDensity(5.0),
+      restDensity(3.6),
       maxVelocity(2.01)
 {
     particles.reserve(count);
@@ -49,17 +50,17 @@ FluidSimulation::FluidSimulation(int count)
 
 FluidSimulation::FluidSimulation(int rows, int cols, float spacing, const Vec2& origin)
     : gravity(0.0, -4.0),
-      timeStep(0.005f),
+      timeStep(0.002f),
       top_border(1.0), bottom_border(-1.0),
       left_border(-1.0), right_border(1.0),
       damping(0.5f),
       velocityDrag(0.99f),
       collisionDamping(0.0f),
-      smoothingRadius(0.16433),
-      pressureMultiplier(4.12456),
-      nearPressureMultiplier(0.93206),
+      smoothingRadius(0.05),
+      pressureMultiplier(8.6),
+      nearPressureMultiplier(5.3),
       viscosityStrength(0.0),
-      restDensity(5.0),
+      restDensity(2.7),
       maxVelocity(2.01)
 {
     int total = rows * cols;
@@ -79,25 +80,6 @@ FluidSimulation::FluidSimulation(int rows, int cols, float spacing, const Vec2& 
             particles.emplace_back(x, y, 0.0, 0.0, mass);
         }
     }
-}
-
-// -------------------- Kernels --------------------
-
-double FluidSimulation::smoothingKernel(double r, double distance) const {
-    if (distance > r) {
-        return 0.0;
-    }
-
-    float volume = M_PI * pow(r ,4) / 6;
-    return (r - distance) * (r - distance) / volume;
-}
-
-double FluidSimulation::smoothingKernalDerivative(float r, float dst) const {
-    if(dst > r){
-        return 0.0;
-    }
-    float scale = 12 / (M_PI * pow(r, 4));
-    return (dst - r) * scale;
 }
 
 float FluidSimulation::calculateSharedPressure(float densityA, float densityB) {
@@ -121,7 +103,7 @@ Vec2 FluidSimulation::calculateGradient(const Particle& particle) {
 
         if (dst < smoothingRadius && dst > 0.0) {
             Vec2 direction = r.normalized();
-            double slope = smoothingKernalDerivative((float)smoothingRadius, (float)dst); // dW/dr
+            double slope = SPHKernels::spikyPow2Derivative((float)smoothingRadius, (float)dst); // dW/dr
             double mass = otherParticle.getMass();
             double density = otherParticle.getDensity();
             double sharedPressure = calculateSharedPressure(thisDensity, density); // e.g. pressure or temperature
@@ -143,17 +125,45 @@ double FluidSimulation::densityOf(const Particle& particle) {
 
     for (const auto& neighbor : particles) {
             double dist = particle.distanceTo(neighbor);
-            double influence = smoothingKernel(smoothingRadius, dist);
+            double influence = SPHKernels::spikyPow2(smoothingRadius, dist);
             density += neighbor.getMass() * influence;
     }
     // avoid zero density
     return std::max(density, EPSILON);
 }
 
+double FluidSimulation::nearDensityOf(const Particle& particle) {
+    double nearDensity = 0.0;
+    for (const auto& neighbor : particles) {
+        double dist = particle.distanceTo(neighbor);
+        double influence = SPHKernels::spikyPow3(smoothingRadius, dist);
+        nearDensity += neighbor.getMass() * influence;
+    }
+    return std::max(nearDensity, EPSILON);
+}
+
 // Pressure 
 double FluidSimulation::pressureOf(double density) {
     double p = pressureMultiplier * (density - restDensity);
     return std::max(p, 0.0);
+}
+
+double FluidSimulation::nearPressureOf(double nearDensity) {
+    double p = nearPressureMultiplier * nearDensity;
+    return std::max(p, 0.0);
+}
+
+float FluidSimulation::calculateSharedNearPressure(float nearDensityA, float nearDensityB) {
+    float pA = static_cast<float>(nearPressureOf(nearDensityA));
+    float pB = static_cast<float>(nearPressureOf(nearDensityB));
+    return (pA + pB) * 0.5f;
+}
+
+Vec2 FluidSimulation::calculateViscosity(const Particle& particle) {
+    // Placeholder viscosity force (returns zero) to keep interface valid.
+    // A full implementation would iterate neighbors and apply Laplacian kernel.
+    (void)particle;
+    return Vec2(0.0, 0.0);
 }
 
 
@@ -224,7 +234,7 @@ double FluidSimulation::densityAt(float x, float y) const {
         double dx = static_cast<double>(x) - neighbor.getX();
         double dy = static_cast<double>(y) - neighbor.getY();
         double dist = std::sqrt(dx * dx + dy * dy);
-        double influence = smoothingKernel(smoothingRadius, dist);
+        double influence = SPHKernels::spikyPow2(smoothingRadius, dist);
         density += neighbor.getMass() * influence;
     }
     return std::max(density, EPSILON);
@@ -294,5 +304,40 @@ void FluidSimulation::resetParticles(int count, float spreadX, float spreadY, fl
         float vy = 0.0f;
 
         particles.emplace_back(x, y, vx, vy, mass);
+    }
+}
+
+// -------------------- Spatial hash helpers --------------------
+FluidSimulation::CellCoord FluidSimulation::getCellCoord(double x, double y) const {
+    const double cellSize = smoothingRadius > 0.0 ? smoothingRadius : 0.1;
+    return CellCoord{ static_cast<int>(std::floor(x / cellSize)), static_cast<int>(std::floor(y / cellSize)) };
+}
+
+void FluidSimulation::buildSpatialGrid() {
+    spatialGrid.clear();
+    const double cellSize = smoothingRadius > 0.0 ? smoothingRadius : 0.1;
+    for (size_t i = 0; i < particles.size(); ++i) {
+        const auto& p = particles[i];
+        CellCoord c = getCellCoord(p.getX(), p.getY());
+        spatialGrid[c].push_back(i);
+    }
+}
+
+void FluidSimulation::getNeighbors(size_t particleIndex, std::vector<size_t>& neighbors) const {
+    if (particleIndex >= particles.size()) return;
+    neighbors.clear();
+    const double cellSize = smoothingRadius > 0.0 ? smoothingRadius : 0.1;
+    const auto& p = particles[particleIndex];
+    CellCoord c = getCellCoord(p.getX(), p.getY());
+
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            CellCoord n{ c.x + dx, c.y + dy };
+            auto it = spatialGrid.find(n);
+            if (it == spatialGrid.end()) continue;
+            for (size_t idx : it->second) {
+                if (idx != particleIndex) neighbors.push_back(idx);
+            }
+        }
     }
 }

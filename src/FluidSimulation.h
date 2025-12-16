@@ -1,6 +1,7 @@
 #pragma once
 #include "Vec2.h"
 #include "Particle.h"
+#include "SPHKernels.h"
 #include <vector>
 #include <unordered_map>
 #include <algorithm>
@@ -50,13 +51,6 @@ public:
     FluidSimulation(int count);
     FluidSimulation(int rows, int cols, float spacing, const Vec2& origin);
     void update();
-    
-    // Kernel functions
-    double smoothingKernel(double r, double distance) const;              // SpikyPow2 kernel for density
-    double smoothingKernalDerivative(float r, float dst) const;           // DerivativeSpikyPow2 (note: matches current implementation spelling)
-    double spikyKernelPow3(double r, double distance) const;               // SpikyPow3 kernel for near density
-    double derivativeSpikyPow3(double r, double distance) const;         // DerivativeSpikyPow3 for near pressure
-    double poly6Kernel(double r, double distance) const;                  // Poly6 kernel for viscosity
     
     // Density and pressure
     double densityOf(const Particle& particle);
